@@ -29,18 +29,14 @@ end font_test;
 architecture Behavioral of font_test is
 
 	component SimpleSPI is
-	generic(
-    cpol    : STD_LOGIC;  --spi clock polarity mode
-    cpha    : STD_LOGIC;  --spi clock phase mode
-    d_width : INTEGER);
 	port(
-		sclk         : IN     STD_LOGIC;  --spi clk from master
-		reset_n      : IN     STD_LOGIC;  --active low reset
-		ss_n         : IN     STD_LOGIC;  --active low slave select
-		mosi         : IN     STD_LOGIC;  --master out, slave in
-		miso : OUT STD_LOGIC;
-		rx_data      : OUT    STD_LOGIC_VECTOR(d_width-1 DOWNTO 0) := (OTHERS => '0');
-		rx_complete : out std_logic
+		clk : in std_logic;
+		sclk : in std_logic;
+		mosi : in std_logic;
+		miso : out std_logic;
+		ssel : in std_logic;
+		data_rx : out std_logic_vector(7 downto 0);
+		byte_rx : out std_logic
 		);
 	end component SimpleSPI;
 
@@ -70,7 +66,7 @@ architecture Behavioral of font_test is
 --			busy         : OUT    STD_LOGIC := '0';                     --busy signal to logic ('1' during transaction)
 --			miso         : OUT    STD_LOGIC := 'Z');                    --master in, slave out
 --	end component spi_slave;
-	CONSTANT spi_d_width : INTEGER := 32;  --spi data width in bits
+	CONSTANT spi_d_width : INTEGER := 8;  --spi data width in bits
 	signal   spi_busy    : STD_LOGIC;
 	signal   spi_tx_ena  : STD_LOGIC;
 	signal   spi_tx_data : STD_LOGIC_VECTOR(23 DOWNTO 0);
@@ -116,7 +112,7 @@ architecture Behavioral of font_test is
 	
 	type state_type is (S0,S1,S2,S3);
 	signal stateSPI: state_type;
-	
+	signal rx_comp_reg : std_logic_vector(2 downto 0);
 begin
 	
 	--resetSPI <= '1';
@@ -185,82 +181,83 @@ begin
 		);
 	
 	
-	SimpleSPI_1: entity work.SimpleSPI
-		generic map(
-			cpol => spi_cpol,
-			cpha => spi_cpha,
-			d_width => spi_d_width
-		)
+	SimpleSPI_1: SimpleSPI
 		port map(
+			clk => clock,
 			sclk => sclk,
-			reset_n => reset_n,
-			ss_n => ss_n,
 			mosi => mosi,
 			miso => miso,
-			rx_data => spi_rx_data,
-			rx_complete => rx_complete
+			ssel => ss_n,
+			data_rx => spi_rx_data,
+			byte_rx => rx_complete
 		);
 	--dataOut<= spi_rx_data;
 
 -- First attempt with 8 bit SPI	
---	process(mosi_complete, rx_complete)
---	variable tmpVar : std_logic_vector(7 downto 0);
---	begin
---		
---		if rising_edge(mosi_complete) and rx_complete = '1' then
---			--spiIndicator <= '1';
---			tmpVar := spi_rx_data;
---			case stateSPI is
---				when S0 =>
---					
---					if spi_rx_data = "00000011" then
---						stateSPI <= S1;
---						writeCmd <= '1';
---					else
---						stateSPI <= S0;
---						writeCmd <= '0';
---					end if;
---					
---				when S1 =>
---					addrUpper <= tmpVar;
---					stateSPI <= S2;
---					writeCmd <= '1';
---				when S2 =>
---					addrLower <= tmpVar;
---					stateSPI <= S3;
---					writeCmd <= '1';
---				when S3 =>
---					dataWrite <= tmpVar;
---					stateSPI <= S0;
---					writeCmd <= '1';
---				when others => stateSPI <= S0;
---			end case;
---		else
---			--spiIndicator <= '0';
---		end if;
---		
---		
---	end process;
-
-
--- Second attempt with 4 byte SPI
-	process(mosi_complete, rx_complete)
+	process(mosi_complete, rx_complete, clock)
+	variable tmpVar : std_logic_vector(7 downto 0);
 	begin
-		if rx_complete = '1' then
-			if instrReg(31 downto 24) = "00000011" then
-				writeCmd <= '1';
-				addrUpper <= instrReg(23 downto 16);
-				addrLower <= instrReg(15 downto 8);
-				dataWrite <= instrReg(7 downto 0);
-			else
-				writeCmd <= '0';
-			end if;
+	if rising_edge(clock) then	
+		if rx_comp_reg(2 downto 1) = "01" then
+			--spiIndicator <= '1';
+			tmpVar := spi_rx_data;
+			case stateSPI is
+				when S0 =>
+					
+					if spi_rx_data = "00000011" then
+						stateSPI <= S1;
+						writeCmd <= '1';
+					else
+						stateSPI <= S0;
+						writeCmd <= '0';
+					end if;
+					
+				when S1 =>
+					addrUpper <= spi_rx_data;
+					stateSPI <= S2;
+					writeCmd <= '1';
+				when S2 =>
+					addrLower <= spi_rx_data;
+					stateSPI <= S3;
+					writeCmd <= '1';
+				when S3 =>
+					dataWrite <= spi_rx_data;
+					stateSPI <= S0;
+					writeCmd <= '1';
+				when others => stateSPI <= S0;
+			end case;
+		else
+			--spiIndicator <= '0';
 		end if;
+		
+	end if;	
 	end process;
 	
-	instrReg <= spi_rx_data;
-	dataOut <= dataWrite;
-	--dataOut <= spi_rx_data;
+	process(clock)
+	begin
+		if rising_edge(clock) then
+			rx_comp_reg <= rx_comp_reg(1 downto 0)&rx_complete;
+		end if;
+	end process;
+
+-- Second attempt with 4 byte SPI
+--	process(mosi_complete, rx_complete)
+--	begin
+--		if rx_complete = '1' then
+--			if instrReg(31 downto 24) = "00000011" then
+--				writeCmd <= '1';
+--				addrUpper <= instrReg(23 downto 16);
+--				addrLower <= instrReg(15 downto 8);
+--				dataWrite <= instrReg(7 downto 0);
+--			else
+--				writeCmd <= '0';
+--			end if;
+--		end if;
+--	end process;
+	
+	--instrReg <= spi_rx_data;
+	--dataOut <= dataWrite;
+	dataOut <= spi_rx_data;
 	writeData <= dataWrite(6 downto 0);
 	writeAddr <= addrUpper(3 downto 0)&addrLower;
 	--dumpData <= addrUpper(7 downto 4);
