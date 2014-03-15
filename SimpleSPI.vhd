@@ -41,15 +41,19 @@ GENERIC(
 		reset_n      : IN     STD_LOGIC;  --active low reset
 		ss_n         : IN     STD_LOGIC;  --active low slave select
 		mosi         : IN     STD_LOGIC;  --master out, slave in
-		rx_data      : OUT    STD_LOGIC_VECTOR(d_width-1 DOWNTO 0) := (OTHERS => '0')
+		miso : OUT STD_LOGIC;
+		rx_data      : OUT    STD_LOGIC_VECTOR(d_width-1 DOWNTO 0) := (OTHERS => '0');
+		rx_complete : out std_logic
 	);
 end SimpleSPI;
 
 architecture Behavioral of SimpleSPI is
 	SIGNAL mode    : STD_LOGIC;	
 	SIGNAL clk     : STD_LOGIC;
-	SIGNAL bit_cnt : STD_LOGIC_VECTOR(d_width-1 DOWNTO 0);
+	SIGNAL bit_cnt : STD_LOGIC_VECTOR(d_width-1 DOWNTO 0) := (OTHERS => '1');
 	SIGNAL rx_buf  : STD_LOGIC_VECTOR(d_width-1 DOWNTO 0) := (OTHERS => '0');
+	SIGNAL tmpCount : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+	signal rxrdy : std_logic;
 begin
 	
 	mode <= cpol XOR cpha;  --'1' for modes that write on rising edge
@@ -57,35 +61,39 @@ begin
 		clk <= sclk WHEN '1',
       NOT sclk WHEN OTHERS;
 	
-	PROCESS(ss_n, clk)
+	PROCESS(ss_n, clk, reset_n, tmpCount)
 	BEGIN
-		IF(ss_n = '1' OR reset_n = '0') THEN                         --this slave is not selected or being reset
-			--bit_cnt <= (conv_integer(NOT cpha) => '1', OTHERS => '0'); --reset miso/mosi bit count
-			bit_cnt <= (conv_integer(NOT cpha) => '1');
-    ELSE                                                         --this slave is selected
-      IF(rising_edge(clk)) THEN                                  --new bit on miso/mosi
-        bit_cnt <= bit_cnt(d_width-1 DOWNTO 0) & '0';          --shift active bit indicator
-      END IF;
-    END IF;
 	
-	IF(reset_n = '0') THEN
-      rx_buf <= (OTHERS => '0');
-    ELSE
-      FOR i IN 0 TO d_width-1 LOOP          
-        IF(falling_edge(clk)) THEN
-				IF(bit_cnt(i) = '1') THEN
-					rx_buf(d_width-1-i) <= mosi;
-				END IF;
-			END IF;
-      END LOOP;
-    END IF;
+		IF(reset_n = '0') THEN
+			rx_buf <= (OTHERS => '0');
+		ELSE
+			if(falling_edge(clk)) then
+				rx_buf(0) <= mosi;
+				FOR i IN 1 to d_width-1 LOOP
+					rx_buf(i) <= rx_buf(i-1);
+				
+				END LOOP;
+				tmpCount <= unsigned(tmpCount) + '1';
+			end if;
+			
+			if(tmpCount > "00110001") then
+				rxrdy <= '1';
+				tmpCount <= (others => '0');
+			else
+				rxrdy <= '0';
+			end if;
+			
+		END IF;
     --fulfill user logic request for receive data
-    IF(reset_n = '0') THEN
-      rx_data <= (OTHERS => '0');
-    ELSIF(ss_n = '0' AND rx_req = '1') THEN  
-      rx_data <= rx_buf;
-    END IF;
-	 end process;
+		IF(reset_n = '0') THEN
+			rx_data <= (OTHERS => '0');
+		ELSIF(ss_n = '0' and rxrdy = '1') THEN  
+			rx_data <= rx_buf;
+		END IF;
+		
+	end process;
+	
+	rx_complete <= rxrdy;
 
 end Behavioral;
 
